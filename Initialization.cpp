@@ -194,6 +194,370 @@ void MatchfromIniSolutionsToEASolutions(double *temparray)
 	delete []tempCount;
 }
 
+void Initialization::CornerPointBasedSearch()
+{
+	extern Solution solution;
+	cec14_eotp CEC14;
+	cec13 CEC13;
+	cec14 CEC14_normal;
+	BBOB09 bbob09;
+	
+	//1. read corner points from the curves
+	//initial the corner points. For each point, the two attributes are the range of neighborhood and the required number of points to bring improvement.
+	double CornerPoints_D10_1Percent[5][2] = {{1.327,7},{1.435,4},{1.543,3},{1.812,2},{1.974,1}};
+	int BestPoint = 2; // the point that best utilize each point to cover more spaces
+
+	//2. Randomly generate EANP initial solutions
+	double **tempIni = new double*[solution.EANP];
+	double **tempIninotsorted = new double*[solution.EANP];
+	double *tempY = new double[solution.EANP];
+	double *tempX = new double[solution.D];
+	double *tempYnotsorted = new double[solution.EANP];
+	for(int p=0;p<solution.EANP;p++) //repeat for all solutions
+	{
+		tempIni[p] = new double[solution.D];
+		tempIninotsorted[p] = new double[solution.D];
+		for (int d=0;d<solution.D;d++)
+		{
+			tempIni[p][d] = RandomGen(solution.Min[d],solution.Max[d]);
+			tempIninotsorted[p][d] = tempIni[p][d];
+			tempX[d] = tempIni[p][d];
+		}
+
+		switch(solution.CECorBBOB)
+		{
+		case 0:
+			tempY[p]=CEC14.cec14_eotp_problems(tempX,solution.D,solution.Func_num);
+			break;
+		case 1:
+			tempY[p]=bbob09.FunctionCalculation(tempX,solution.Func_num);
+			break;
+		case 2:
+			tempY[p]=CEC13.cec13_problems(tempX,solution.D,solution.Func_num);
+			break;
+		case 3:
+			tempY[p]=CEC14_normal.cec14_problems(tempX,solution.D,solution.Func_num);
+			break;
+		}
+		tempYnotsorted[p] = tempY[p];
+	}
+
+	//3. sort the solutions
+	sort(tempY,tempY+solution.EANP);
+	//the below sorting algorithm cannot handle when there are more than two objective values are identical (though this is very unlikely the situation)
+	for (int p=0;p<solution.EANP;p++)
+	{
+		for (int i=0;i<solution.EANP;i++)
+		{
+			if (tempYnotsorted[p] == tempY[i])
+			{
+				for (int d=0;d<solution.D;d++)
+				{
+					tempIni[i][d] = tempIninotsorted[p][d];
+				}
+				break;
+			}
+		}
+	}
+	//4. while IniFE is still available:
+	int FECount = 0;
+	double **NewPoints = new double*[(int)CornerPoints_D10_1Percent[BestPoint][1]-1];
+	double **NewPointsExploration = new double*[solution.EANP-1];
+	for (int i = 0;i<(int)CornerPoints_D10_1Percent[BestPoint][1]-1;i++)
+	{
+		NewPoints[i] = new double[solution.D];
+	}
+	for (int i = 0;i<solution.EANP-1;i++)
+	{
+		NewPointsExploration[i] = new double[solution.D];
+	}
+	while (FECount<solution.IniNP)
+	{
+		//4.1 do neighbor search on the best initial solution
+		double NeighborRange = 0;
+		double tempPointY = 0;
+		for (int i = 0;i<(int)CornerPoints_D10_1Percent[BestPoint][1]-1;i++)
+		{
+			for (int d=0;d<solution.D;d++)
+			{
+				NeighborRange = (solution.Max[d] - solution.Min[d])/pow(10,CornerPoints_D10_1Percent[BestPoint][0]);
+				NewPoints[i][d] = RandomGen(tempIni[0][d]-NeighborRange,tempIni[0][d]+NeighborRange);
+				tempX[d] = NewPoints[i][d];
+			}
+
+			switch(solution.CECorBBOB)
+			{
+			case 0:
+				tempPointY=CEC14.cec14_eotp_problems(tempX,solution.D,solution.Func_num);
+				break;
+			case 1:
+				tempPointY=bbob09.FunctionCalculation(tempX,solution.Func_num);
+				break;
+			case 2:
+				tempPointY=CEC13.cec13_problems(tempX,solution.D,solution.Func_num);
+				break;
+			case 3:
+				tempPointY=CEC14_normal.cec14_problems(tempX,solution.D,solution.Func_num);
+				break;
+			}
+			FECount++;//update FE count
+
+			//if better new point is found, update
+			if (tempPointY < tempY[0])
+			{
+				tempY[0] = tempPointY;
+				for (int d=0;d<solution.D;d++)
+				{
+					tempIni[0][d] = NewPoints[i][d];
+				}
+			}
+		}
+
+		//4.2 do exploration on the other initial solutions
+		for (int i=0;i<solution.EANP-1;i++)//start from 1, the first (smallest) has been used for neighbor search.
+		{
+			for (int d=0;d<solution.D;d++)//do exploration on each dimension. If lower(upper) bound of neighbor range is smaller than min[d](max[d]), then only random generat in the upper(lower) side
+			//if both sides feasible, random generate will consider both sides
+			//if either sides infeasible, return error message: neighborhood too big, no feasible solution.
+			{
+				double Lower, Upper;
+				NeighborRange = (solution.Max[d] - solution.Min[d])/pow(10,CornerPoints_D10_1Percent[BestPoint][0]);
+				Lower = tempIni[i+1][d] - NeighborRange - solution.Min[d];
+				Upper = solution.Max[d] - (tempIni[i+1][d] + NeighborRange);
+				if (Lower<0 && Upper <0)//both sides infeasible
+				{
+					printf_s("Too big neighbor range, no feasible solution on Dimension %d",d);
+				}
+				else if (Lower>0 && Upper>0)//both sides feasible
+				{
+					double r = rand();
+					if (r<0.5)//generate at lower part
+						tempX[d] = RandomGen(solution.Min[d], tempIni[i+1][d] - NeighborRange);
+					else
+						tempX[d] = RandomGen(tempIni[i+1][d] + NeighborRange, solution.Max[d]);
+				}
+				else if(Lower>0 && Upper<0)//only at lower part feasible
+					tempX[d] = RandomGen(solution.Min[d], tempIni[i+1][d] - NeighborRange);
+				else if(Lower<0 && Upper>0)//only upper part feasible
+					tempX[d] = RandomGen(tempIni[i+1][d] + NeighborRange, solution.Max[d]);
+			}
+
+			//calculate objective function value:
+			switch(solution.CECorBBOB)
+			{
+			case 0:
+				tempPointY=CEC14.cec14_eotp_problems(tempX,solution.D,solution.Func_num);
+				break;
+			case 1:
+				tempPointY=bbob09.FunctionCalculation(tempX,solution.Func_num);
+				break;
+			case 2:
+				tempPointY=CEC13.cec13_problems(tempX,solution.D,solution.Func_num);
+				break;
+			case 3:
+				tempPointY=CEC14_normal.cec14_problems(tempX,solution.D,solution.Func_num);
+				break;
+			}
+			FECount++;//update FE count
+
+			//update solution:
+			if (tempPointY<tempY[i+1])
+			{
+				for (int d=0;d<solution.D;d++)
+				{
+					tempIni[i+1][d] = tempX[d];
+				}
+				tempY[i+1] = tempPointY;
+			}
+		}
+		//question 1: how to balance the rate of these exploitation and exploration?
+		//question 2: how to select new points? Greedy?
+
+		//4.3 after exploitation and exploration, sort the solutions again:
+		sort(tempY,tempY+solution.EANP);
+		//the below sorting algorithm cannot handle when there are more than two objective values are identical (though this is very unlikely the situation)
+		for (int p=0;p<solution.EANP;p++)
+		{
+			for (int i=0;i<solution.EANP;i++)
+			{
+				if (tempYnotsorted[p] == tempY[i])
+				{
+					for (int d=0;d<solution.D;d++)
+					{
+						tempIni[i][d] = tempIninotsorted[p][d];
+					}
+					break;
+				}
+			}
+		}
+	}
+	
+	//5. Copy the final initial solutions to the solution.Y and solution.S arrays.
+
+	delete []tempY;
+	delete []tempYnotsorted;
+	delete []tempX;
+	for(int p=0;p<solution.EANP;p++) //repeat for all solutions
+	{
+		delete []tempIni[p];
+		delete []tempIninotsorted[p];
+	}
+	delete []tempIni;
+	delete []tempIninotsorted;
+	for (int i = 0;i<(int)CornerPoints_D10_1Percent[BestPoint][1]-1;i++)
+	{
+		delete []NewPoints[i];
+	}
+	for (int i = 0;i<solution.EANP-1;i++)
+	{
+		delete []NewPointsExploration[i];
+	}
+	delete []NewPoints;
+	delete []NewPointsExploration;
+}
+
+//this function returns a randomly swapped integer vector containing values from Min to Max. Min should be 0 and Max is data.NumSample-1
+void RandomIntVec(int Min, int Max, int *Vec)
+{
+	extern Solution solution;
+	for (int i=0;i<solution.IniNP;i++){
+		Vec[i]=i;
+	}
+
+	//swap two random numbers in the vec for NumSample times
+	int swap_time = 0;
+	int swap_temp = 0;
+	while (swap_time<solution.IniNP){
+		int rNum1 = (int)(rand()*rand())%(Max+1-Min)+Min-1;//random generate two integers
+		int rNum2 = (int)(rand()*rand())%(Max+1-Min)+Min-1;//random generate two integers
+		//swap the numbers on that integer position of Vec
+		swap_temp = Vec[rNum1];
+		Vec[rNum1] = Vec[rNum2];
+		Vec[rNum2] = swap_temp;
+
+		swap_time++;//counter update
+	}
+}
+
+//this function generate index samples for LHD
+void LHD_IndexSamples(int **OutIndex)
+{
+	extern Solution solution;
+	
+	int *temp_vec = new int[solution.IniNP];
+	
+	for (int d=0;d<solution.D;d++)
+	{
+		RandomIntVec(1,solution.IniNP,temp_vec);
+		for (int n=0;n<solution.IniNP;n++)
+		{
+			OutIndex[n][d] = temp_vec[n];
+		}
+	}
+
+	delete []temp_vec;
+}
+
+void LHD_RealSampling(int **InIndex, double **OutSamples)//this function takes index samples and generate actual samples by means of LHD
+{
+	extern Solution solution;
+	Initialization initialization;
+	
+	for (int d=0;d<solution.D;d++)
+	{
+		double Sec_Length = (double)((solution.Max[d]-solution.Min[d]))/(double)(solution.IniNP);//to calculate the length of each section, dividing according to the number of samples
+		
+		for (int n=0;n<solution.IniNP;n++)
+		{
+			//randomly generate real sample values according to index.
+			double randnum = initialization.RandomGen(0.0,Sec_Length);
+			OutSamples[n][d] = solution.Min[d] + (InIndex[n][d]) * Sec_Length +randnum;
+		}
+	}
+}
+
+void Initialization::LHD()
+{
+	extern Solution solution;
+	cec14_eotp CEC14;
+	cec13 CEC13;
+	cec14 CEC14_normal;
+	BBOB09 bbob09;
+
+	//initiate variables
+	int **LHD_index = new int*[solution.IniNP];
+	double **LHD_samples = new double*[solution.IniNP];
+	for (int i=0;i<solution.IniNP;i++)
+	{
+		LHD_index[i] = new int[solution.D];
+		LHD_samples[i] = new double[solution.D];
+		for (int d=0;d<solution.D;d++)
+		{
+			LHD_index[i][d]=0;
+			LHD_samples[i][d]=0;
+		}
+	}
+
+	//LHD indexing and sampling
+	LHD_IndexSamples(LHD_index);
+	LHD_RealSampling(LHD_index,LHD_samples);
+	/*if (data.SequencingMethod == "NN")
+	{
+		//LHD samples are randomly generated, use nearest neighbor to sort and sequencing samples
+		NearestSorting(LHD_samples, data.SampleSequence);
+	}*/
+	//else if (data.SequencingMethod == "RNG")
+	//{
+		//LHD samples are already randomly generated. Directly copy to output sequence
+	for (int i=0;i<solution.IniNP;i++)
+	{
+		for (int d=0;d<solution.D;d++)
+		{
+			solution.IniS[i][d] = LHD_samples[i][d];
+		}
+	}
+	//}
+	
+	double *X=new double[solution.D];
+	double *Y=new double[solution.IniNP];
+	for(int p=0;p<solution.IniNP;p++) //repeat for all solutions
+	{
+		for (int i=0;i<solution.D;i++)
+		{
+			X[i]=solution.IniS[p][i];
+		}
+		
+		switch (solution.CECorBBOB)
+		{
+		case 0:
+			Y[p]=CEC14.cec14_eotp_problems(X,solution.D,solution.Func_num);
+			break;
+		case 1:
+			Y[p]=bbob09.FunctionCalculation(X,solution.Func_num);
+			break;
+		case 2:
+			Y[p]=CEC13.cec13_problems(X,solution.D,solution.Func_num);
+			break;
+		case 3:
+			Y[p]=CEC14_normal.cec14_problems(X,solution.D,solution.Func_num);
+			break;
+		}
+	}
+
+	MatchfromIniSolutionsToEASolutions(Y);
+	
+	//release RAM
+	for (int i=0;i<solution.IniNP;i++)
+	{
+		delete []LHD_index[i];
+		delete []LHD_samples[i];
+	}
+	delete []LHD_index;
+	delete []LHD_samples;
+	delete []X;
+	delete []Y;
+}
+
 void Initialization::Random()
 {
 	extern Solution solution;
@@ -216,12 +580,16 @@ void Initialization::Random()
 		{
 		case 0:
 			Y[p]=CEC14.cec14_eotp_problems(X,solution.D,solution.Func_num);
+			break;
 		case 1:
 			Y[p]=bbob09.FunctionCalculation(X,solution.Func_num);
+			break;
 		case 2:
 			Y[p]=CEC13.cec13_problems(X,solution.D,solution.Func_num);
+			break;
 		case 3:
 			Y[p]=CEC14_normal.cec14_problems(X,solution.D,solution.Func_num);
+			break;
 		}
 	}
 
@@ -758,6 +1126,9 @@ void Initialization::Initial()
 		break;
 	case 6:
 		Sobol();
+		break;
+	case 7:
+		LHD();
 		break;
 	}
 }
